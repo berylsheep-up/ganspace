@@ -16,11 +16,13 @@ import random
 from pathlib import Path
 from types import SimpleNamespace
 from utils import download_ckpt
+from config import Config
 from netdissect import proggan, zdataset
 from . import biggan
 from . import stylegan
 from . import stylegan2
 from abc import abstractmethod, ABC as AbstractBaseClass
+from functools import singledispatch
 
 class BaseModel(AbstractBaseClass, torch.nn.Module):
 
@@ -495,9 +497,21 @@ class ProGAN(BaseModel):
         noise = zdataset.z_sample_for_model(self.model, n_samples, seed=seed)[...]
         return noise.to(self.device)
 
+    def forward(self, x):
+        if isinstance(x, list):
+            assert len(x) == 1, "ProGAN only supports a single global latent"
+            x = x[0]
+        
+        out = self.model.forward(x)
+        return 0.5*(out+1)
+
     # Run model only until given layer
     def partial_forward(self, x, layer_name):
         assert isinstance(self.model, torch.nn.Sequential), 'Expected sequential model'
+
+        if isinstance(x, list):
+            assert len(x) == 1, "ProGAN only supports a single global latent"
+            x = x[0]
 
         x = x.view(x.shape[0], x.shape[1], 1, 1)
         for name, module in self.model._modules.items(): # ordered dict
@@ -633,6 +647,8 @@ class BigGAN(BaseModel):
 
         return None
 
+# Version 1: separate parameters
+@singledispatch
 def get_model(name, output_class, device, **kwargs):
     # Check if optionally provided existing model can be reused
     inst = kwargs.get('inst', None)
@@ -667,6 +683,14 @@ def get_model(name, output_class, device, **kwargs):
 
     return model
 
+# Version 2: Config object
+@get_model.register(Config)
+def _(cfg, device, **kwargs):
+    kwargs['use_w'] = kwargs.get('use_w', cfg.use_w) # explicit arg can override cfg
+    return get_model(cfg.model, cfg.output_class, device, **kwargs)
+
+# Version 1: separate parameters
+@singledispatch
 def get_instrumented_model(name, output_class, layers, device, **kwargs):
     model = get_model(name, output_class, device, **kwargs)
     model.eval()
@@ -703,3 +727,9 @@ def get_instrumented_model(name, output_class, layers, device, **kwargs):
         model.use_w()
 
     return inst
+
+# Version 2: Config object
+@get_instrumented_model.register(Config)
+def _(cfg, device, **kwargs):
+    kwargs['use_w'] = kwargs.get('use_w', cfg.use_w) # explicit arg can override cfg
+    return get_instrumented_model(cfg.model, cfg.output_class, cfg.layer, device, **kwargs)
